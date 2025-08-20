@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -16,26 +17,42 @@ namespace Company.Function
         public static async Task<List<string>> RunOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            // Get input list of cities; fall back to defaults when null/empty
-            var cities = context.GetInput<List<string>>()
-                ?? new List<string> { "Tokyo", "Seattle", "London" };
+            var orderId = context.GetInput<string>() ?? "ORDER-12345";
+            var outputs = new List<string>();
 
-            // Fan-out: start activity tasks in parallel
-            var tasks = cities.Select(city =>
-                context.CallActivityAsync<string>(nameof(ProcessCity), city)).ToArray();
+            // Function chaining: each step depends on the previous
+            outputs.Add(await context.CallActivityAsync<string>(nameof(ValidatePayment), orderId));
+            outputs.Add(await context.CallActivityAsync<string>(nameof(CheckInventory), orderId));
+            outputs.Add(await context.CallActivityAsync<string>(nameof(SendNotification), orderId));
 
-            // Fan-in: wait for all results
-            var results = await Task.WhenAll(tasks);
-
-            return results.ToList();
+            return outputs;
         }
 
-        [FunctionName(nameof(ProcessCity))]
-        public static string ProcessCity([ActivityTrigger] string city, ILogger log)
+        [FunctionName(nameof(ValidatePayment))]
+        public static string ValidatePayment([ActivityTrigger] string orderId, ILogger log)
         {
-            log.LogInformation("Processing city: {city}", city);
-            // Minimal simulated work; replace with real API call if needed
-            return $"Processed {city}";
+            log.LogInformation("Validating payment for order: {orderId}", orderId);
+            // Simulate processing time
+            Task.Delay(5000).Wait();
+            return $"Payment validated for {orderId}";
+        }
+
+        [FunctionName(nameof(CheckInventory))]
+        public static string CheckInventory([ActivityTrigger] string orderId, ILogger log)
+        {
+            log.LogInformation("Checking inventory for order: {orderId}", orderId);
+            // Simulate processing time
+            Task.Delay(5000).Wait();
+            return $"Inventory checked for {orderId}";
+        }
+
+        [FunctionName(nameof(SendNotification))]
+        public static string SendNotification([ActivityTrigger] string orderId, ILogger log)
+        {
+            log.LogInformation("Sending notification for order: {orderId}", orderId);
+            // Simulate processing time
+            Task.Delay(5000).Wait();
+            return $"Notification sent for {orderId}";
         }
 
         [FunctionName("DurableFunctionsOrchestrationChain_HttpStart")]
@@ -44,25 +61,12 @@ namespace Company.Function
             [DurableClient] IDurableOrchestrationClient starter,
             ILogger log)
         {
-            // Read optional JSON array from request body: ["CityA","CityB"]
-            string requestBody = await req.Content.ReadAsStringAsync();
-            List<string> cities = null;
-            if (!string.IsNullOrWhiteSpace(requestBody))
-            {
-                try
-                {
-                    cities = JsonConvert.DeserializeObject<List<string>>(requestBody);
-                }
-                catch
-                {
-                    // ignore parse error and use defaults
-                    cities = null;
-                }
-            }
+            // Get order ID from query string or use default
+            string orderId = req.RequestUri.ParseQueryString()["orderId"] ?? "ORDER-12345";
 
-            string instanceId = await starter.StartNewAsync("DurableFunctionsOrchestrationChain", cities);
+            string instanceId = await starter.StartNewAsync("DurableFunctionsOrchestrationChain", orderId);
 
-            log.LogInformation("Started orchestration with ID = '{instanceId}'.", instanceId);
+            log.LogInformation("Started order processing orchestration with ID = '{instanceId}' for order {orderId}.", instanceId, orderId);
 
             return starter.CreateCheckStatusResponse(req, instanceId);
         }

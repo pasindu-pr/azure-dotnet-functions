@@ -1,10 +1,12 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 
 namespace Company.Function
 {
@@ -14,22 +16,26 @@ namespace Company.Function
         public static async Task<List<string>> RunOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context)
         {
-            var outputs = new List<string>();
+            // Get input list of cities; fall back to defaults when null/empty
+            var cities = context.GetInput<List<string>>()
+                ?? new List<string> { "Tokyo", "Seattle", "London" };
 
-            // Replace "hello" with the name of your Durable Activity Function.
-            outputs.Add(await context.CallActivityAsync<string>(nameof(SayHello), "Tokyo"));
-            outputs.Add(await context.CallActivityAsync<string>(nameof(SayHello), "Seattle"));
-            outputs.Add(await context.CallActivityAsync<string>(nameof(SayHello), "London"));
+            // Fan-out: start activity tasks in parallel
+            var tasks = cities.Select(city =>
+                context.CallActivityAsync<string>(nameof(ProcessCity), city)).ToArray();
 
-            // returns ["Hello Tokyo!", "Hello Seattle!", "Hello London!"]
-            return outputs;
+            // Fan-in: wait for all results
+            var results = await Task.WhenAll(tasks);
+
+            return results.ToList();
         }
 
-        [FunctionName(nameof(SayHello))]
-        public static string SayHello([ActivityTrigger] string name, ILogger log)
+        [FunctionName(nameof(ProcessCity))]
+        public static string ProcessCity([ActivityTrigger] string city, ILogger log)
         {
-            log.LogInformation("Saying hello to {name}.", name);
-            return $"Hello {name}!";
+            log.LogInformation("Processing city: {city}", city);
+            // Minimal simulated work; replace with real API call if needed
+            return $"Processed {city}";
         }
 
         [FunctionName("DurableFunctionsOrchestrationFanInOut_HttpStart")]
@@ -38,8 +44,23 @@ namespace Company.Function
             [DurableClient] IDurableOrchestrationClient starter,
             ILogger log)
         {
-            // Function input comes from the request content.
-            string instanceId = await starter.StartNewAsync("DurableFunctionsOrchestrationFanInOut", null);
+            // Read optional JSON array from request body: ["CityA","CityB"]
+            string requestBody = await req.Content.ReadAsStringAsync();
+            List<string> cities = null;
+            if (!string.IsNullOrWhiteSpace(requestBody))
+            {
+                try
+                {
+                    cities = JsonConvert.DeserializeObject<List<string>>(requestBody);
+                }
+                catch
+                {
+                    // ignore parse error and use defaults
+                    cities = null;
+                }
+            }
+
+            string instanceId = await starter.StartNewAsync("DurableFunctionsOrchestrationFanInOut", cities);
 
             log.LogInformation("Started orchestration with ID = '{instanceId}'.", instanceId);
 
